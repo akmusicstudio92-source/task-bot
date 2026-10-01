@@ -107,7 +107,7 @@ async def count_qrs():
             r = await c.fetchone()
             return r[0] if r else 0
 
-# ============ STATES ============
+# ============ STATES ===========
 class AdminStates(StatesGroup):
     qr_data = State()
     title = State()
