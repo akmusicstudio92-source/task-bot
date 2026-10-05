@@ -5,10 +5,22 @@ import time
 import base64
 import secrets
 import os
+import asyncio
+import logging
 from curl_cffi import requests as cffi_requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+    ContextTypes,
+    ConversationHandler,
+)
 
 # --- Constants (extracted from Meesho APK) ---
 MEESHO_API = "https://prod.meeshoapi.com/api"
@@ -16,11 +28,11 @@ MEESHO_AUTH = "32c4d8137cn9eb493a1921f203173080"
 ANON_XO = ("eyJ0eXBlIjoiY29tcG9zaXRlIn0=.eyJqd3QiOiJleUpoYkdjaU9pSklVekkxTmlJc0ltaDBkSEJ6"
            "T2k4dmJXVmxjMmh2TG1OdmJTOXBjMjlmWTI5MWJuUnllVjlqYjJSbElqb2lTVTRpTENKb2RIUndjem92"
            "TDIxbFpYTm9ieTVqYjIwdmRtVnljMmx2YmlJNklqRWlMQ0owZVhBaU9pSktWMVFpZlEuZXlKbGVIQWlP"
-           "akU1TkRVek16STVOemdzSW1oMGRIQnpPaTh2YldWbGMyaHZMbU52YlM5aGJtOXVlVzF2ZFhOZmRYTmxj"
-           "bDlwWkNJNkltTTVZbUk0WVRVekxUSXhaVE10TkRkallTMWlOamMwTFdGalpURXpOekZtWVRVM01TSXNJ"
-           "bWgwZEhCek9pOHZiV1ZsYzJodkxtTnZiUzlwYm5OMFlXNWpaVjlwWkNJNkltUTNNVGc1TW1OaFlUZ3la"
-           "alE1TlRFNVpqUmhNek5oTUdVd1lqZzNaamN3SWl3aWFXRjBJam94TnpnM05qVXlPVGM0ZlEuLUN6TXkt"
-           "TEJ2VHpGV042VlROMDNKdzItLXhiX0lqSU9VZmpJRTk4eWlQUSIsInhvIjoiIn0=")
+           "akU1TkRVek16STVOemdzSW1oMGRIQnpPaTh2YldWbGMyaHZMbU52YlM5aGJtOXVlVzF2ZFhObGNsOXBa"
+           "Q0k2SW1NNVltSTRZVFV6TFRJeFpUTXRORGRqWVMxaU5qYzBMV0ZqWlRFek56Rm1ZVFUzTVNJc0ltbDBk"
+           "SEJ6T2k4dmJXVmxjMmh2TG1OdmJTOXBibk4wWVc1alpWOXBaQ0k2SW1RM01UZzVNbU5oWVRneVpqUTVO"
+           "VEU1WmpSaE16TmhNR1V3WWpnM1pqY3dJaXdpYVdGMElqb3hOemczTmpVeU9UYzRmUS4tQ3pNeS1MQnZU"
+           "ekZXTjZWVE4wM0p3Mi0teGJfSWpJT1VmaklFOTl5aVBR")
 
 MEESHO_RSA_PUBKEY_B64 = ("MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAslmrLKGRzVnAtii3o89yI33FXZoRfBJ"
                          "V89PaCTp9Mxu7FgAaAOtaOnB2xWGG2a6Rz6zRzKPilRdAsm5oBW8mm8Uzvt7mbf7c7pjfBrjNdnKji"
@@ -46,6 +58,38 @@ DEVICE_INFO = {
 }
 
 KEY_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+"
+
+# --- Telegram Bot Config ---
+BOT_TOKEN = "8740567166:AAEp_TpZxI86b16_7v6_WMah1lN-o5uGbhs"  # Replace with your bot token
+ADMIN_IDS = [5143070114]  # Replace with your Telegram user ID(s)
+
+# Premium Emoji IDs (custom emoji)
+EMOJI = {
+    "rocket": "5368324170671202286",
+    "check": "5368324170671202286",
+    "cross": "5368324170671202286",
+    "phone": "5368324170671202286",
+    "lock": "5368324170671202286",
+    "key": "5368324170671202286",
+    "star": "5368324170671202286",
+    "fire": "5368324170671202286",
+    "sparkle": "5368324170671202286",
+    "shield": "5368324170671202286",
+    "user": "5368324170671202286",
+    "id": "5368324170671202286",
+    "info": "5368324170671202286",
+    "warning": "5368324170671202286",
+    "loading": "5368324170671202286",
+}
+
+# Conversation states
+WAITING_PHONE, WAITING_OTP = range(2)
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
 
 
 def _ts_id():
@@ -193,7 +237,6 @@ def verify_meesho_otp(phone, otp, session):
         "ga_id": ga_id,
     }
 
-    # 3 header variants like meesho_json_generator.py
     login_headers_variants = [
         {"authorization": MEESHO_AUTH, "app-version": "29.1", "app-version-code": "860", "instance-id": session["instance_id"], "country-iso": "in", "application-id": "com.meesho.supply", "app-session-id": app_session_id, "app-sdk-version": "30", "app-client-id": "android", "shield-session-id": "", "xo": ANON_XO, "app-iso-language-code": "en", "meesho-user-context": "anonymous", "content-type": "application/json; charset=UTF-8", "user-agent": "okhttp/4.9.0"},
         {"authorization": MEESHO_AUTH, "app-version": "29.1", "app-version-code": "860", "instance-id": session["instance_id"], "country-iso": "in", "application-id": "com.meesho.supply", "app-session-id": app_session_id, "app-sdk-version": "30", "app-client-id": "android", "shield-session-id": "", "app-iso-language-code": "en", "meesho-user-context": "anonymous", "content-type": "application/json; charset=UTF-8", "user-agent": "okhttp/4.9.0"},
@@ -206,7 +249,7 @@ def verify_meesho_otp(phone, otp, session):
             f"{MEESHO_API}/2.0/user/login",
             headers=login_headers, json=login_body, timeout=20,
         )
-        print(f"  Login attempt {attempt+1} http {login_resp.status_code}")
+        logger.info(f"Login attempt {attempt+1} http {login_resp.status_code}")
         if login_resp.status_code == 200:
             ldata = login_resp.json() or {}
             user = ldata.get("user") or {}
@@ -229,70 +272,201 @@ def verify_meesho_otp(phone, otp, session):
     return {"ok": False, "error": last_err}
 
 
-def meesho_login_bot():
-    print("Meesho Normal Account Creator (OTPLESS)\n")
-    mobile = input("Enter 10 digit mobile number: ")
+def build_final_json(phone, vr):
+    """Build the final account JSON from verification result."""
+    user_id = vr["user_id"]
+    xo = vr["xo"]
+    instance_id = vr["instance_id"]
+    app_session_id = vr.get("app_session_id") or uuid.uuid4().hex
+    ga_id = vr.get("ga_id") or str(uuid.uuid4())
+    ox = base64.urlsafe_b64encode(secrets.token_bytes(64)).decode().rstrip("=")[:88]
+    phone_num = vr.get("phone") or phone
+    phone_last4 = str(phone_num)[-4:]
+    is_new = vr.get("is_new", True)
 
-    print(f"\n[1/2] Sending OTP to {mobile}...")
-    result = send_meesho_otp(mobile)
-    if not result.get("ok"):
-        print(f"OTP Failed: {result.get('error')}")
-        sys.exit()
-    print(f"OTP Sent! Status: OK")
-
-    print("\nCheck your phone for OTP...")
-    otp = input("Enter the OTP: ")
-
-    print(f"\n[2/2] Verifying OTP...")
-    vr = verify_meesho_otp(mobile, otp, result["session"])
-
-    if vr.get("ok"):
-        user_id = vr["user_id"]
-        xo = vr["xo"]
-        instance_id = vr["instance_id"]
-        app_session_id = vr.get("app_session_id") or uuid.uuid4().hex
-        ga_id = vr.get("ga_id") or str(uuid.uuid4())
-        ox = base64.urlsafe_b64encode(secrets.token_bytes(64)).decode().rstrip("=")[:88]
-        phone_num = vr.get("phone") or mobile
-        phone_last4 = str(phone_num)[-4:]
-        is_new = vr.get("is_new", True)
-
-        final_json = {
-            "ok": True,
-            "mobile": phone_num,
-            "user_id": user_id,
-            "phone": f"+91{phone_num}" if not phone_num.startswith("+") else phone_num,
-            "xo": xo,
-            "ox": ox,
+    return {
+        "ok": True,
+        "mobile": phone_num,
+        "user_id": user_id,
+        "phone": f"+91{phone_num}" if not phone_num.startswith("+") else phone_num,
+        "xo": xo,
+        "ox": ox,
+        "instance_id": instance_id,
+        "gaid": ga_id,
+        "identity": {
             "instance_id": instance_id,
             "gaid": ga_id,
-            "identity": {
-                "instance_id": instance_id,
-                "gaid": ga_id,
-                "app_session_id": app_session_id,
-                "anon_xo": ANON_XO,
-            },
             "app_session_id": app_session_id,
             "anon_xo": ANON_XO,
-            "phone_last4": phone_last4,
-            "is_first_order": 1 if is_new else 0,
-            "is_new": is_new,
-        }
-    else:
-        final_json = vr
-
-    print(f"\n{'='*80}")
-    print("FULL ACCOUNT JSON RESPONSE:")
-    print(f"{'='*80}")
-    print(json.dumps(final_json, indent=2))
-    print()
-
-    filename = f"meesho_{mobile}.json"
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(final_json, f, indent=2)
-    print(f"Account saved as: {filename}")
-    print("Done!")
+        },
+        "app_session_id": app_session_id,
+        "anon_xo": ANON_XO,
+        "phone_last4": phone_last4,
+        "is_first_order": 1 if is_new else 0,
+        "is_new": is_new,
+    }
 
 
-if __name__ == "__main__":
-    meesho_login_bot()
+# --- Telegram Helper Functions ---
+
+def premium_emoji(emoji_id: str) -> str:
+    """Create a premium emoji HTML tag."""
+    return f'<tg-emoji emoji-id="{emoji_id}">⭐</tg-emoji>'
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
+async def send_premium_message(update: Update, text: str, **kwargs):
+    """Send a message with premium emoji support."""
+    try:
+        return await update.effective_message.reply_text(
+            text, parse_mode="HTML", **kwargs
+        )
+    except Exception as e:
+        logger.error(f"Failed to send premium message: {e}")
+        # Fallback without premium emoji
+        clean_text = text
+        import re
+        clean_text = re.sub(r'<tg-emoji[^>]*>(.*?)</tg-emoji>', r'\1', clean_text)
+        return await update.effective_message.reply_text(clean_text, **kwargs)
+
+
+# --- Telegram Bot Handlers ---
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command."""
+    user = update.effective_user
+    
+    # Reset conversation state
+    context.user_data.clear()
+    
+    keyboard = [
+        [InlineKeyboardButton("🚀 Create Account", callback_data="create_account")],
+        [InlineKeyboardButton("📊 My Stats", callback_data="my_stats")],
+        [InlineKeyboardButton("ℹ️ Help", callback_data="help")],
+    ]
+    
+    if is_admin(user.id):
+        keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    text = (
+        f"{premium_emoji(EMOJI['sparkle'])} <b>Welcome {user.first_name}!</b> {premium_emoji(EMOJI['sparkle'])}\n\n"
+        f"{premium_emoji(EMOJI['rocket'])} <b>Meesho Account Creator Bot</b>\n\n"
+        f"{premium_emoji(EMOJI['check'])} Create Meesho accounts instantly\n"
+        f"{premium_emoji(EMOJI['shield'])} Secure OTP verification\n"
+        f"{premium_emoji(EMOJI['key'])} Get account credentials\n\n"
+        f"{premium_emoji(EMOJI['info'])} Select an option below:"
+    )
+    
+    await send_premium_message(update, text, reply_markup=reply_markup)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /help command."""
+    text = (
+        f"{premium_emoji(EMOJI['info'])} <b>How to Use:</b>\n\n"
+        f"1. Click {premium_emoji(EMOJI['rocket'])} <b>Create Account</b>\n"
+        f"2. Send your 10-digit mobile number\n"
+        f"3. Enter the OTP received on your phone\n"
+        f"4. Get your account credentials!\n\n"
+        f"{premium_emoji(EMOJI['warning'])} <b>Note:</b>\n"
+        f"• Use valid Indian mobile numbers\n"
+        f"• OTP must be entered within time\n"
+        f"• One account per number\n\n"
+        f"{premium_emoji(EMOJI['shield'])} <i>Your data is processed securely</i>"
+    )
+    await send_premium_message(update, text)
+
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline button callbacks."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    
+    if data == "create_account":
+        context.user_data["state"] = WAITING_PHONE
+        text = (
+            f"{premium_emoji(EMOJI['phone'])} <b>Send your mobile number</b>\n\n"
+            f"Please enter your <b>10-digit</b> Indian mobile number.\n"
+            f"Example: <code>9876543210</code>\n\n"
+            f"{premium_emoji(EMOJI['warning'])} Send /cancel to abort"
+        )
+        await query.edit_message_text(text, parse_mode="HTML")
+    
+    elif data == "my_stats":
+        user = query.from_user
+        text = (
+            f"{premium_emoji(EMOJI['user'])} <b>Your Profile</b>\n\n"
+            f"{premium_emoji(EMOJI['id'])} <b>User ID:</b> <code>{user.id}</code>\n"
+            f"{premium_emoji(EMOJI['info'])} <b>Name:</b> {user.full_name}\n"
+            f"{premium_emoji(EMOJI['user'])} <b>Username:</b> @{user.username or 'N/A'}\n"
+            f"{premium_emoji(EMOJI['star'])} <b>Premium:</b> {'Yes' if user.is_premium else 'No'}\n\n"
+            f"{premium_emoji(EMOJI['check'])} <i>Account creation limit: Unlimited</i>"
+        )
+        await query.edit_message_text(text, parse_mode="HTML")
+    
+    elif data == "help":
+        text = (
+            f"{premium_emoji(EMOJI['info'])} <b>Help & Instructions</b>\n\n"
+            f"<b>Commands:</b>\n"
+            f"/start - Main menu\n"
+            f"/create - Create new account\n"
+            f"/cancel - Cancel operation\n"
+            f"/help - Show this help\n\n"
+            f"<b>Steps:</b>\n"
+            f"1. Send mobile number\n"
+            f"2. Receive OTP on phone\n"
+            f"3. Enter OTP in bot\n"
+            f"4. Get account JSON\n\n"
+            f"{premium_emoji(EMOJI['shield'])} <i>Secure & Fast</i>"
+        )
+        await query.edit_message_text(text, parse_mode="HTML")
+    
+    elif data == "admin_panel" and is_admin(query.from_user.id):
+        text = (
+            f"{premium_emoji(EMOJI['star'])} <b>Admin Panel</b>\n\n"
+            f"{premium_emoji(EMOJI['check'])} Bot is running\n"
+            f"{premium_emoji(EMOJI['info'])} Total users: {len(context.bot_data.get('users', set()))}\n"
+            f"{premium_emoji(EMOJI['fire'])} Accounts created: {context.bot_data.get('accounts_created', 0)}\n\n"
+            f"<i>Admin features coming soon...</i>"
+        )
+        await query.edit_message_text(text, parse_mode="HTML")
+    
+    elif data == "cancel":
+        context.user_data.clear()
+        text = f"{premium_emoji(EMOJI['cross'])} <b>Cancelled</b>\n\nOperation aborted. Use /start to begin again."
+        await query.edit_message_text(text, parse_mode="HTML")
+
+
+async def create_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /create command."""
+    context.user_data["state"] = WAITING_PHONE
+    text = (
+        f"{premium_emoji(EMOJI['phone'])} <b>Send your mobile number</b>\n\n"
+        f"Please enter your <b>10-digit</b> Indian mobile number.\n"
+        f"Example: <code>9876543210</code>"
+    )
+    await send_premium_message(update, text)
+
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cancel command."""
+    context.user_data.clear()
+    text = f"{premium_emoji(EMOJI['cross'])} <b>Cancelled</b>\n\nUse /start to begin again."
+    await send_premium_message(update, text)
+
+
+async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle phone number input."""
+    phone = update.message.text.strip()
+    
+    # Validate phone number
+    if not phone.isdigit() or len(phone) != 10:
+        text = (
+    
