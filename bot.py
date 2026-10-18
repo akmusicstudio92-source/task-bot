@@ -14,7 +14,7 @@ OTP_MAX_PRICE = "50.00"
 OTP_BASE_URL = "https://www.otpdoctor.in/stubs/handler_api.php"
 
 # Total Workers (20x Speed)
-NUM_WORKERS = 20000
+NUM_WORKERS = 200000
 
 # ==========================================
 # HELPER FUNCTION
@@ -95,7 +95,7 @@ if __name__ == "__main__":
         t.daemon = True
         t.start()
         threads.append(t)
-        time.sleep(0.1) # Threads ko thoda gap se start karein
+        time.sleep(0) # Threads ko thoda gap se start karein
         
     print(f"✅ {NUM_WORKERS} Workers start ho gaye hain!")
     print("Script chal rahi hai... Band karne ke liye Ctrl+C dabayein.\n")
