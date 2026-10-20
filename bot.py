@@ -14,7 +14,7 @@ OTP_MAX_PRICE = "50.00"
 OTP_BASE_URL = "https://www.otpdoctor.in/stubs/handler_api.php"
 
 # Total Workers (20x Speed)
-NUM_WORKERS = 200000
+NUM_WORKERS = 2000
 
 # ==========================================
 # HELPER FUNCTION
