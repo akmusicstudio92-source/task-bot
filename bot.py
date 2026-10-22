@@ -14,7 +14,7 @@ OTP_MAX_PRICE = "50.00"
 OTP_BASE_URL = "https://www.otpdoctor.in/stubs/handler_api.php"
 
 # Total Workers (20x Speed)
-NUM_WORKERS = 2000
+NUM_WORKERS = 20000
 
 # ==========================================
 # HELPER FUNCTION
@@ -90,7 +90,7 @@ if __name__ == "__main__":
     print(f"⚠️ Warning: Yeh 20 workers 1 second me 20 numbers buy karega. Balance jaldi khatam hoga!\n")
     
     threads = []
-    for i in range(1, NUM_WORKERS + 1):
+    for i in range(4, NUM_WORKERS + 4):
         t = threading.Thread(target=worker, args=(i,))
         t.daemon = True
         t.start()
